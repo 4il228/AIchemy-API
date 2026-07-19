@@ -32,7 +32,7 @@
 
 **Ключевая идея:** каждый рецепт крафтится только один раз — первый запрос проходит полный цикл (LLM + генерация картинки), все последующие мгновенно получают закэшированный результат из базы.
 
-> ⚠️ Это **движок синтеза** для будущей многопользовательской алхимической игры. Дизайн продукта (аккаунты, рынок, колбы, таймеры, экономика) описан в [`DESIGN.md`](DESIGN.md), но ещё **не реализован** в коде.
+> ⚠️ Это **движок синтеза** для будущей многопользовательской алхимической игры. Дизайн продукта (аккаунты, рынок, колбы, таймеры, экономика) описан в `DESIGN.md` (локальный файл, не в репозитории), но ещё **не реализован** в коде.
 
 ---
 
@@ -78,7 +78,8 @@
 | **БД** | SQLite (`aiosqlite`) / PostgreSQL (`asyncpg`) |
 | **LLM** | OpenAI SDK → OpenRouter (`tencent/hy3:free`) |
 | **Генерация изображений** | httpx → Pollinations (`flux`, 1024×1024) |
-| **Config** | python-dotenv + `.env` |
+| **Config / secrets** | python-dotenv + `.env` (gitignored) |
+| **LLM System Prompt** | `.env` → `SYSTEM_PROMPT` |
 | **Admin UI** | Tkinter + Pillow |
 
 ---
@@ -121,6 +122,10 @@ pip install fastapi uvicorn openai python-dotenv sqlalchemy aiosqlite httpx pill
 
 ```env
 OPENROUTER_API_KEY=sk-or-v1-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+
+# Опционально — кастомные промпты (если не заданы → встроенные fallback'ы)
+# SYSTEM_PROMPT="Your custom system prompt..."
+# STYLE_MODIFIERS="Your custom style modifiers..."
 ```
 
 Опционально — строка подключения к БД (по умолчанию — локальный SQLite):
@@ -203,10 +208,10 @@ AIchemy-API/
 ├── README.md               # Этот файл
 ├── SPEC.md                 # Техническая спецификация для разработчиков
 ├── SPEC(base).md           # Базовая спецификация (v0.1.0)
-├── DESIGN.md               # Дизайн-документ будущей игры (backlog)
+├── DESIGN.md               # Дизайн-документ будущей игры (backlog, локально)
 ├── PLAN.md                 # План внедрения фич (для агентов)
 ├── AGENTS.md               # Директивы для LLM-агентов
-├── .env                    # Секреты (не коммитится)
+├── .env                    # Секреты и системные промпты (не коммитится)
 ├── .gitignore              # Игнорируемые файлы
 ├── alchemy.db              # SQLite-база (создаётся при старте)
 └── generated_images/       # Сгенерированные PNG (создаётся при старте)
@@ -251,12 +256,13 @@ python admin.py
 |-----------|-------------|-------------|----------|
 | `OPENROUTER_API_KEY` | ✅ (для крафта) | — | Ключ API OpenRouter |
 | `DATABASE_URL` | ❌ | `sqlite+aiosqlite:///./alchemy.db` | Строка подключения к БД |
+| `SYSTEM_PROMPT` | ❌ | встроенный fallback | Системный промпт для LLM |
+| `STYLE_MODIFIERS` | ❌ | встроенный fallback | Стилевой суффикс для генерации изображений |
 
 ### Жёстко заданные параметры (в коде)
 
 - Модель LLM: `tencent/hy3:free` (OpenRouter)
 - Генерация картинок: Pollinations (`flux`, 1024×1024)
-- Системный промпт и стилевые модификаторы
 - Порт сервера: `8000`
 
 ### Переход на PostgreSQL
@@ -285,7 +291,7 @@ DATABASE_URL=postgresql+asyncpg://user:password@localhost:5432/alchemy
 - [x] Обработка race condition при параллельном крафте
 - [x] Автоматическая перегенерация изображений при потере файла
 
-### В плане (из `DESIGN.md`) 📋
+### В плане (дизайн-документ локально) 📋
 - [ ] Регистрация и JWT-аутентификация
 - [ ] Инвентарь игроков и ценность элементов
 - [ ] Алхимические колбы с таймерами
