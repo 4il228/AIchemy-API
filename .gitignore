@@ -19,6 +19,9 @@ build/
 .DS_Store
 Thumbs.db
 
+# ─── Design docs (keep local only) ────────────────
+DESIGN.md
+
 # ─── Runtime ──────────────────────────────────────
 alchemy.db
 alchemy.db-journal
