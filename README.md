@@ -39,30 +39,31 @@
 ## 🏗 Архитектура
 
 ```
-┌─────────────┐     POST /api/v1/craft     ┌──────────────────┐
-│   Client    │ ──────────────────────────► │  FastAPI Server  │
-│  (curl/UI)  │ ◄────────────────────────── │   (main.py)      │
-└─────────────┘     CraftResponse JSON      └────────┬─────────┘
-                                                     │
-                    ┌─────────────────────────────────┼────────────────────┐
-                    │                HIT              │      MISS          │
-                    ▼                                 ▼                    │
-            ┌──────────────┐                  ┌──────────────────┐        │
-            │  SQLite DB   │                  │  OpenRouter LLM  │        │
-            │  recipes     │                  │  tencent/hy3     │        │
-            │  (кэш)       │                  │  temperature 1.2 │        │
-            └──────┬───────┘                  └────────┬─────────┘        │
-                   │                                   │                  │
-                   │                           ┌───────▼────────┐        │
-                   │                           │  Pollinations  │        │
-                   │                           │  flux 1024×1024│        │
-                   │                           └───────┬────────┘        │
-                   │                                   │                  │
-                   └─────────────── сохраняем ◄─────────┘                 │
-                                                    │                    │
-                                                    ▼                    │
-                                            ┌──────────────────┐         │
-                                            │ generated_images/│ ◄───────┘
+┌─────────────┐     POST /api/v1/craft     ┌──────────────────────────────────┐
+│   Client    │ ──────────────────────────► │        FastAPI Server           │
+│  (curl/UI)  │ ◄────────────────────────── │  (main.py → app.factory)        │
+└─────────────┘     CraftResponse JSON      └──────┬───────────────────────────┘
+                                                   │
+                    ┌────────────────────────────────┼───────────────────────┐
+                    │               HIT              │       MISS            │
+                    ▼                                ▼                       │
+            ┌──────────────┐                 ┌──────────────────┐           │
+            │  SQLite DB   │                 │ services/llm.py  │           │
+            │  recipes     │                 │  OpenRouter LLM  │           │
+            │  (кэш)       │                 │  tencent/hy3     │           │
+            └──────┬───────┘                 └────────┬─────────┘           │
+                   │                                  │                     │
+                   │                          ┌───────▼────────┐           │
+                   │                          │ services/images│           │
+                   │                          │  Pollinations  │           │
+                   │                          │  flux 1024×1024│           │
+                   │                          └───────┬────────┘           │
+                   │                                  │                     │
+                   └─────────────── сохраняем ◄────────┘                    │
+                                                    │                      │
+                                                    ▼                      │
+                                            ┌──────────────────┐          │
+                                            │ generated_images/│ ◄────────┘
                                             │    *.png files   │
                                             └──────────────────┘
 ```
@@ -81,6 +82,7 @@
 | **Config / secrets** | python-dotenv + `.env` (gitignored) |
 | **LLM System Prompt** | `.env` → `SYSTEM_PROMPT` |
 | **Admin UI** | Tkinter + Pillow |
+| **Архитектура** | Модульная (пакет `app/` с роутерами, сервисами, утилитами) |
 
 ---
 
@@ -202,25 +204,57 @@ curl http://localhost:8000/images/par_a1b2c3d4.png --output result.png
 
 ```
 AIchemy-API/
-├── main.py                 # FastAPI-приложение, эндпоинты, крафт, LLM, картинки
+├── main.py                 # Точка входа — создаёт приложение через create_app()
 ├── db.py                   # SQLAlchemy модели (Recipe, User), async engine, init_db
 ├── admin.py                # Десктопная админка на Tkinter (CRUD рецептов)
 ├── README.md               # Этот файл
 ├── .env                    # Секреты и системные промпты (не коммитится)
 ├── .gitignore              # Игнорируемые файлы
 ├── alchemy.db              # SQLite-база (создаётся при старте)
-└── generated_images/       # Сгенерированные PNG (создаётся при старте)
+├── generated_images/       # Сгенерированные PNG (создаётся при старте)
+│
+└── app/                    # Модульная структура приложения
+    ├── __init__.py
+    ├── config.py           # Настройки из .env (Settings + экземпляр settings)
+    ├── schemas.py          # Pydantic-схемы (CraftRequest, CraftResponse)
+    ├── deps.py             # Injected-зависимости (заглушка авторизации)
+    ├── factory.py          # Фабрика FastAPI-приложения (create_app)
+    ├── lifespan.py         # Startup/shutdown: init_db, сидирование пользователя
+    │
+    ├── routers/            # HTTP-роутеры (FastAPI APIRouter)
+    │   ├── __init__.py     # api_router = /api/v1 + подключение craft + recipes
+    │   ├── craft.py        # POST /api/v1/craft
+    │   └── recipes.py      # GET /api/v1/recipes
+    │
+    ├── services/           # Бизнес-логика
+    │   ├── __init__.py
+    │   ├── craft.py        # Оркестрация крафта + работа с БД
+    │   ├── llm.py          # LLM-клиент (OpenRouter → OpenAI SDK)
+    │   └── images.py       # Генерация и скачивание картинок (Pollinations)
+    │
+    └── utils/              # Вспомогательные функции
+        ├── __init__.py
+        └── text.py         # Транслитерация, слаги, extract_json
 ```
 
 > 📝 В репозитории только `README.md`. Файлы `AGENTS.md`, `PLAN.md`, `SPEC.md`, `SPEC(base).md`, `DESIGN.md` хранятся локально — они не отслеживаются git и отсутствуют в истории.
 
 ### Описание ключевых файлов
 
-| Файл | Назначение |
-|------|-----------|
-| `main.py` | Весь API: крафт, нормализация, LLM-запросы, скачивание картинок, lifespan |
-| `db.py` | Модели ORM, движок, фабрика сессий, инициализация схемы |
+| Файл / Модуль | Назначение |
+|---------------|-----------|
+| `main.py` | Точка входа — вызывает `app.factory.create_app()` и запускает uvicorn |
+| `db.py` | Модели ORM (Recipe, User), движок, фабрика сессий, инициализация схемы |
 | `admin.py` | Tkinter-приложение для управления БД рецептов без HTTP |
+| `app/config.py` | Единый источник конфигурации (переменные окружения + константы) |
+| `app/schemas.py` | Pydantic-схемы запросов/ответов |
+| `app/factory.py` | Фабрика FastAPI: монтирует static, подключает роутеры |
+| `app/lifespan.py` | Асинхронный lifespan: инициализация БД и seed-пользователя |
+| `app/routers/` | HTTP-эндпоинты (craft, recipes) — минимум логики, диспатч в сервисы |
+| `app/services/craft.py` | Оркестрация крафта: кэш, LLM → картинка → сохранение, race condition |
+| `app/services/llm.py` | OpenAI-клиент → OpenRouter, строгая JSON-схема ответа |
+| `app/services/images.py` | Скачивание картинок с Pollinations на диск |
+| `app/utils/text.py` | Транслитерация (ГОСТ 7.79), слаги, извлечение JSON из ответа LLM |
 
 ---
 
@@ -286,6 +320,7 @@ DATABASE_URL=postgresql+asyncpg://user:password@localhost:5432/alchemy
 - [x] Система создателей (`creator_id` + `creator_nickname`)
 - [x] Обработка race condition при параллельном крафте
 - [x] Автоматическая перегенерация изображений при потере файла
+- [x] Модульная архитектура (роутеры, сервисы, утилиты, фабрика)
 
 ### В плане 📋
 - [ ] Регистрация и JWT-аутентификация
