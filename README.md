@@ -6,11 +6,7 @@
 
 *Два элемента + ИИ → новый результат, описание и изображение*
 
-[![FastAPI](https://img.shields.io/badge/FastAPI-0.139-009688?logo=fastapi)](https://fastapi.tiangolo.com)
-[![Python](https://img.shields.io/badge/Python-3.12-3776AB?logo=python&logoColor=white)](https://python.org)
-[![SQLAlchemy](https://img.shields.io/badge/SQLAlchemy-2.0-4479A1)](https://sqlalchemy.org)
-[![OpenRouter](https://img.shields.io/badge/OpenRouter-LLM-FF6F00)](https://openrouter.ai)
-[![Pollinations](https://img.shields.io/badge/Pollinations-Image-8E44AD)](https://pollinations.ai)
+
 
 </div>
 
