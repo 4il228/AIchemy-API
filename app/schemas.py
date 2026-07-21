@@ -53,6 +53,13 @@ class CraftRequest(BaseModel):
 class CraftResponse(BaseModel):
     result: str
     description: str
-    image_url: str
+    image_url: str = Field(
+        description="Относительный URL сгенерированного изображения (например, /images/result.png). "
+        "В Scalar после тестового запроса картинка показывается дополнительно под JSON-ответом.",
+        json_schema_extra={
+            "format": "uri",
+            "examples": ["/images/voda_ogon.png"],
+        },
+    )
     creator_id: int
     creator_nickname: str

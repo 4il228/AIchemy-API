@@ -74,7 +74,7 @@
 | Слой | Технология |
 |------|-----------|
 | **Язык** | Python 3.12+ |
-| **API-фреймворк** | FastAPI + Uvicorn |
+| **API-фреймворк** | FastAPI + Uvicorn, Scalar (/docs) |
 | **Валидация** | Pydantic v2 |
 | **ORM** | SQLAlchemy 2.x (async) |
 | **БД** | SQLite (`aiosqlite`) / PostgreSQL (`asyncpg`) |
@@ -117,7 +117,7 @@ venv\Scripts\activate
 # Linux / macOS
 source venv/bin/activate
 
-pip install fastapi uvicorn openai python-dotenv sqlalchemy aiosqlite httpx pillow argon2-cffi
+pip install fastapi uvicorn openai python-dotenv sqlalchemy aiosqlite httpx pillow argon2-cffi scalar-fastapi
 ```
 
 ### 2. Переменные окружения
@@ -148,7 +148,8 @@ python main.py
 ```
 
 Сервер доступен на [http://localhost:8000](http://localhost:8000).  
-Документация OpenAPI: [http://localhost:8000/docs](http://localhost:8000/docs).
+Интерактивная документация (Scalar): [http://localhost:8000/docs](http://localhost:8000/docs).  
+> Scalar заменяет стандартные Swagger/ReDoc — удобный UI для тестирования эндпоинтов с отображением сгенерированных картинок прямо в ответах.
 
 ---
 
@@ -312,6 +313,7 @@ AIchemy-API/
     ├── deps.py             # get_current_user — проверка cookie-сессии (401)
     ├── factory.py          # Фабрика FastAPI-приложения (create_app)
     ├── lifespan.py         # Startup/shutdown: init_db, сидирование пользователя
+    ├── scalar_docs.py      # Scalar UI на /docs + встроенное превью картинок
     │
     ├── routers/            # HTTP-роутеры (FastAPI APIRouter)
     │   ├── __init__.py     # api_router = /api/v1 + подключение auth + craft + recipes
@@ -344,7 +346,8 @@ AIchemy-API/
 | `app/config.py` | Единый источник конфигурации (переменные окружения + константы) |
 | `app/schemas.py` | Pydantic-схемы запросов/ответов + валидация никнейма и сложности пароля |
 | `app/deps.py` | `get_current_user`: cookie → сессия в БД → `user_id`, иначе `401` |
-| `app/factory.py` | Фабрика FastAPI: монтирует static, подключает роутеры |
+| `app/factory.py` | Фабрика FastAPI: монтирует static, подключает роутеры, включает Scalar |
+| `app/scalar_docs.py` | Scalar UI на `/docs` + JS-скрипт превью картинок из ответов craft |
 | `app/lifespan.py` | Асинхронный lifespan: инициализация БД и seed-пользователя |
 | `app/routers/` | HTTP-эндпоинты (auth, craft, recipes) — минимум логики, диспатч в сервисы |
 | `app/services/auth.py` | Пароли (Argon2id), сессии (SHA-256 токена в БД), защита от timing-атак |
@@ -428,6 +431,7 @@ DATABASE_URL=postgresql+asyncpg://user:password@localhost:5432/alchemy
 - [x] Регистрация и вход (Argon2id + серверные сессии в HttpOnly-cookie)
 - [x] Приватный крафт: создателем рецепта становится авторизованный пользователь
 - [x] Rate limiting на вход/регистрацию (защита от brute-force)
+- [x] Scalar UI на `/docs` вместо Swagger/ReDoc с превью сгенерированных картинок
 
 ### В плане 📋
 - [ ] Инвентарь игроков и ценность элементов
@@ -445,6 +449,6 @@ DATABASE_URL=postgresql+asyncpg://user:password@localhost:5432/alchemy
 
 **AIchemy API** — *превращаем слова в артефакты* 🧪✨
 
-[OpenAPI Docs](http://localhost:8000/docs) · [GitHub](https://github.com/4il228/AIchemy-API)
+[Scalar Docs](http://localhost:8000/docs) · [GitHub](https://github.com/4il228/AIchemy-API)
 
 </div>
