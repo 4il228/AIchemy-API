@@ -10,7 +10,7 @@ from app.schemas import CraftResponse
 from app.services import images as image_service
 from app.services import llm as llm_service
 from app.utils import make_image_filename
-from db import Recipe, async_session
+from db import Recipe, User, async_session
 
 
 def _to_response(recipe: Recipe, *, nickname_fallback: str | None = None) -> CraftResponse:
@@ -103,12 +103,16 @@ async def craft_elements(
             )
             return _to_response(existing)
 
+        # Создатель — реальный автор реакции: подставляем его никнейм
+        creator = await session.scalar(select(User).where(User.id == current_user_id))
         return CraftResponse(
             result=element_name,
             description=element_desc,
             image_url=image_service.image_url_for(filename),
             creator_id=current_user_id,
-            creator_nickname=settings.default_creator_nickname,
+            creator_nickname=(
+                creator.nickname if creator else settings.default_creator_nickname
+            ),
         )
 
 

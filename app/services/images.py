@@ -9,8 +9,9 @@ async def download_image(image_prompt_en: str, filename: str) -> None:
     """Скачивает сгенерированную картинку с Pollinations на диск."""
     final_prompt = f"{image_prompt_en}, {settings.style_modifiers}"
     encoded_prompt = urllib.parse.quote(final_prompt)
+    base = settings.image_base_url.rstrip("/")
     url = (
-        f"https://image.pollinations.ai/p/{encoded_prompt}"
+        f"{base}/{encoded_prompt}"
         f"?width={settings.image_width}&height={settings.image_height}"
         f"&model={settings.image_model}&nologo=true"
     )

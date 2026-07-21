@@ -18,6 +18,7 @@
 - [Архитектура](#-архитектура)
 - [Как это работает](#-как-это-работает)
 - [Быстрый старт](#-быстрый-старт)
+- [Аутентификация](#-аутентификация)
 - [API](#-api)
 - [Структура проекта](#-структура-проекта)
 - [Администрирование](#-администрирование)
@@ -77,6 +78,7 @@
 | **Валидация** | Pydantic v2 |
 | **ORM** | SQLAlchemy 2.x (async) |
 | **БД** | SQLite (`aiosqlite`) / PostgreSQL (`asyncpg`) |
+| **Аутентификация** | Серверные сессии + Argon2id (`argon2-cffi`), HttpOnly-cookie |
 | **LLM** | OpenAI SDK → OpenRouter (`tencent/hy3:free`) |
 | **Генерация изображений** | httpx → Pollinations (`flux`, 1024×1024) |
 | **Config / secrets** | python-dotenv + `.env` (gitignored) |
@@ -115,7 +117,7 @@ venv\Scripts\activate
 # Linux / macOS
 source venv/bin/activate
 
-pip install fastapi uvicorn openai python-dotenv sqlalchemy aiosqlite httpx pillow
+pip install fastapi uvicorn openai python-dotenv sqlalchemy aiosqlite httpx pillow argon2-cffi
 ```
 
 ### 2. Переменные окружения
@@ -124,6 +126,9 @@ pip install fastapi uvicorn openai python-dotenv sqlalchemy aiosqlite httpx pill
 
 ```env
 OPENROUTER_API_KEY=sk-or-v1-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+
+# Для локальной разработки по http (в проде за HTTPS — убрать или true)
+COOKIE_SECURE=false
 
 # Опционально — кастомные промпты (если не заданы → встроенные fallback'ы)
 # SYSTEM_PROMPT="Your custom system prompt..."
@@ -147,11 +152,92 @@ python main.py
 
 ---
 
+## 🔐 Аутентификация
+
+Сервис использует **серверные сессии** с cookie. Токен сессии передаётся исключительно в `HttpOnly`-cookie — клиентский JS не имеет к нему доступа, хранить его в `localStorage`/`sessionStorage` не нужно и нельзя.
+
+### Меры безопасности
+
+| Вектор атаки | Защита |
+|--------------|--------|
+| Кража пароля из БД | Argon2id (time_cost=3, 64 МиБ, parallelism=4), пароли не логируются |
+| Кража токена из БД | В БД хранится только SHA-256 токена; сырой токен есть лишь в cookie клиента |
+| XSS-кража токена | `HttpOnly`-cookie, токен недоступен из JS |
+| CSRF | `SameSite=Strict` — браузер не отправляет cookie с чужих сайтов |
+| Перехват по сети | `Secure`-cookie (только HTTPS; для локального http — `COOKIE_SECURE=false`) |
+| Brute-force | Per-IP rate limiting: 5 попыток входа и 3 регистрации в минуту (настраивается) |
+| User enumeration / timing | Единый ответ `401 «Неверный логин или пароль»` + dummy-верификация Argon2 при неизвестном логине |
+| SQL-инъекции | Только SQLAlchemy ORM, никакого сырого SQL с пользовательским вводом |
+
+### Эндпоинты
+
+#### `POST /api/v1/auth/register`
+
+Регистрация. Требования: никнейм 3–50 символов (`a-z`, `A-Z`, `0-9`, `_`, `-`), пароль 8–128 символов, минимум одна буква и одна цифра.
+
+```json
+{ "nickname": "alchemist_42", "password": "S3cretPass" }
+```
+
+Ответ `201` + сессионная cookie (сразу авторизован):
+
+```json
+{ "id": 2, "nickname": "alchemist_42" }
+```
+
+Ошибки: `409` — никнейм занят, `422` — невалидные данные, `429` — превышен лимит попыток.
+
+#### `POST /api/v1/auth/login`
+
+Вход. Тело как у регистрации. Ответ `200` + cookie `session_token` (`HttpOnly; Secure; SameSite=Strict`, TTL 7 дней по умолчанию).
+
+Ошибки: `401` — неверный логин или пароль (единый ответ), `429` — превышен лимит попыток.
+
+#### `POST /api/v1/auth/logout`
+
+Выход: сессия удаляется в БД (мгновенная инвалидация), cookie стирается.
+
+#### `GET /api/v1/auth/me`
+
+Текущий пользователь по cookie-сессии. `401`, если не авторизован.
+
+### Пример полного цикла
+
+```bash
+# Регистрация (cookie сохраняется в файл)
+curl -c cookies.txt -X POST http://localhost:8000/api/v1/auth/register \
+  -H "Content-Type: application/json" \
+  -d '{"nickname": "alchemist_42", "password": "S3cretPass"}'
+
+# Крафт под своим аккаунтом (cookie отправляется из файла)
+curl -b cookies.txt -X POST http://localhost:8000/api/v1/craft \
+  -H "Content-Type: application/json" \
+  -d '{"element_1": "Огонь", "element_2": "Вода"}'
+
+# Выход
+curl -b cookies.txt -X POST http://localhost:8000/api/v1/auth/logout
+```
+
+### Защита собственных эндпоинтов
+
+Любой маршрут делается приватным одной зависимостью:
+
+```python
+from fastapi import Depends
+from app.deps import get_current_user
+
+@router.post("/my-private-route")
+async def my_route(current_user_id: int = Depends(get_current_user)):
+    ...
+```
+
+---
+
 ## 📡 API
 
-### `POST /api/v1/craft`
+### `POST /api/v1/craft` 🔒
 
-Крафт нового элемента из двух компонентов.
+Крафт нового элемента из двух компонентов. **Требует авторизации** (cookie-сессия): неавторизованный запрос получает `401`. Создателем рецепта (`creator_id`, `creator_nickname`) становится авторизованный пользователь, выполнивший реакцию первым.
 
 **Запрос:**
 
@@ -178,6 +264,7 @@ python main.py
 
 | Код | Причина |
 |-----|---------|
+| 401 | Не авторизован (нет/истекла cookie-сессия) |
 | 422 | Пустой элемент |
 | 500 | Отсутствует API-ключ |
 | 502 | Ошибка LLM / генерации картинки |
@@ -185,8 +272,13 @@ python main.py
 ### Примеры использования
 
 ```bash
-# Крафт "Человек + Ёж"
-curl -X POST http://localhost:8000/api/v1/craft \
+# Сначала вход (cookie в файл)
+curl -c cookies.txt -X POST http://localhost:8000/api/v1/auth/login \
+  -H "Content-Type: application/json" \
+  -d '{"nickname": "alchemist_42", "password": "S3cretPass"}'
+
+# Крафт "Человек + Ёж" под своим аккаунтом
+curl -b cookies.txt -X POST http://localhost:8000/api/v1/craft \
   -H "Content-Type: application/json" \
   -d '{"element_1": "Человек", "element_2": "Ёж"}'
 
@@ -196,7 +288,7 @@ curl http://localhost:8000/images/par_a1b2c3d4.png --output result.png
 
 ### `GET /api/v1/recipes`
 
-Получение списка всех открытых рецептов (в порядке убывания ID).
+Получение списка всех открытых рецептов (в порядке убывания ID). Публичный, read-only.
 
 ---
 
@@ -205,7 +297,7 @@ curl http://localhost:8000/images/par_a1b2c3d4.png --output result.png
 ```
 AIchemy-API/
 ├── main.py                 # Точка входа — создаёт приложение через create_app()
-├── db.py                   # SQLAlchemy модели (Recipe, User), async engine, init_db
+├── db.py                   # SQLAlchemy модели (Recipe, User, Session), async engine, init_db
 ├── admin.py                # Десктопная админка на Tkinter (CRUD рецептов)
 ├── README.md               # Этот файл
 ├── .env                    # Секреты и системные промпты (не коммитится)
@@ -216,24 +308,27 @@ AIchemy-API/
 └── app/                    # Модульная структура приложения
     ├── __init__.py
     ├── config.py           # Настройки из .env (Settings + экземпляр settings)
-    ├── schemas.py          # Pydantic-схемы (CraftRequest, CraftResponse)
-    ├── deps.py             # Injected-зависимости (заглушка авторизации)
+    ├── schemas.py          # Pydantic-схемы (Craft*, Register/Login, UserResponse)
+    ├── deps.py             # get_current_user — проверка cookie-сессии (401)
     ├── factory.py          # Фабрика FastAPI-приложения (create_app)
     ├── lifespan.py         # Startup/shutdown: init_db, сидирование пользователя
     │
     ├── routers/            # HTTP-роутеры (FastAPI APIRouter)
-    │   ├── __init__.py     # api_router = /api/v1 + подключение craft + recipes
-    │   ├── craft.py        # POST /api/v1/craft
+    │   ├── __init__.py     # api_router = /api/v1 + подключение auth + craft + recipes
+    │   ├── auth.py         # POST /auth/register|login|logout, GET /auth/me
+    │   ├── craft.py        # POST /api/v1/craft (приватный)
     │   └── recipes.py      # GET /api/v1/recipes
     │
     ├── services/           # Бизнес-логика
     │   ├── __init__.py
+    │   ├── auth.py         # Argon2id-хеширование, сессии, timing-защита
     │   ├── craft.py        # Оркестрация крафта + работа с БД
     │   ├── llm.py          # LLM-клиент (OpenRouter → OpenAI SDK)
     │   └── images.py       # Генерация и скачивание картинок (Pollinations)
     │
     └── utils/              # Вспомогательные функции
         ├── __init__.py
+        ├── ratelimit.py    # In-memory rate limiter (per-IP, sliding window)
         └── text.py         # Транслитерация, слаги, extract_json
 ```
 
@@ -244,14 +339,17 @@ AIchemy-API/
 | Файл / Модуль | Назначение |
 |---------------|-----------|
 | `main.py` | Точка входа — вызывает `app.factory.create_app()` и запускает uvicorn |
-| `db.py` | Модели ORM (Recipe, User), движок, фабрика сессий, инициализация схемы |
+| `db.py` | Модели ORM (Recipe, User, Session), движок, фабрика сессий, инициализация схемы |
 | `admin.py` | Tkinter-приложение для управления БД рецептов без HTTP |
 | `app/config.py` | Единый источник конфигурации (переменные окружения + константы) |
-| `app/schemas.py` | Pydantic-схемы запросов/ответов |
+| `app/schemas.py` | Pydantic-схемы запросов/ответов + валидация никнейма и сложности пароля |
+| `app/deps.py` | `get_current_user`: cookie → сессия в БД → `user_id`, иначе `401` |
 | `app/factory.py` | Фабрика FastAPI: монтирует static, подключает роутеры |
 | `app/lifespan.py` | Асинхронный lifespan: инициализация БД и seed-пользователя |
-| `app/routers/` | HTTP-эндпоинты (craft, recipes) — минимум логики, диспатч в сервисы |
+| `app/routers/` | HTTP-эндпоинты (auth, craft, recipes) — минимум логики, диспатч в сервисы |
+| `app/services/auth.py` | Пароли (Argon2id), сессии (SHA-256 токена в БД), защита от timing-атак |
 | `app/services/craft.py` | Оркестрация крафта: кэш, LLM → картинка → сохранение, race condition |
+| `app/utils/ratelimit.py` | Rate limiter per-IP для `/auth/login` и `/auth/register` |
 | `app/services/llm.py` | OpenAI-клиент → OpenRouter, строгая JSON-схема ответа |
 | `app/services/images.py` | Скачивание картинок с Pollinations на диск |
 | `app/utils/text.py` | Транслитерация (ГОСТ 7.79), слаги, извлечение JSON из ответа LLM |
@@ -288,6 +386,12 @@ python admin.py
 | `DATABASE_URL` | ❌ | `sqlite+aiosqlite:///./alchemy.db` | Строка подключения к БД |
 | `SYSTEM_PROMPT` | ❌ | встроенный fallback | Системный промпт для LLM |
 | `STYLE_MODIFIERS` | ❌ | встроенный fallback | Стилевой суффикс для генерации изображений |
+| `COOKIE_SECURE` | ❌ | `true` | `Secure`-флаг сессионной cookie; `false` только для локального http |
+| `SESSION_TTL_HOURS` | ❌ | `168` | Время жизни сессии (часов) |
+| `SESSION_COOKIE_NAME` | ❌ | `session_token` | Имя сессионной cookie |
+| `LOGIN_RATE_LIMIT` | ❌ | `5` | Попыток входа с одного IP за окно |
+| `REGISTER_RATE_LIMIT` | ❌ | `3` | Регистраций с одного IP за окно |
+| `RATE_LIMIT_WINDOW_SECONDS` | ❌ | `60` | Размер окна rate limiter (секунд) |
 
 ### Жёстко заданные параметры (в коде)
 
@@ -321,9 +425,11 @@ DATABASE_URL=postgresql+asyncpg://user:password@localhost:5432/alchemy
 - [x] Обработка race condition при параллельном крафте
 - [x] Автоматическая перегенерация изображений при потере файла
 - [x] Модульная архитектура (роутеры, сервисы, утилиты, фабрика)
+- [x] Регистрация и вход (Argon2id + серверные сессии в HttpOnly-cookie)
+- [x] Приватный крафт: создателем рецепта становится авторизованный пользователь
+- [x] Rate limiting на вход/регистрацию (защита от brute-force)
 
 ### В плане 📋
-- [ ] Регистрация и JWT-аутентификация
 - [ ] Инвентарь игроков и ценность элементов
 - [ ] Алхимические колбы с таймерами
 - [ ] Рынок и торговля элементами
