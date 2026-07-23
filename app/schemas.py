@@ -63,3 +63,20 @@ class CraftResponse(BaseModel):
     )
     creator_id: int
     creator_nickname: str
+
+
+class InventoryItemResponse(BaseModel):
+    inventory_item_id: int
+    recipe_id: int
+    name: str
+    description: str
+    image_url: str = Field(
+        description="Относительный URL изображения элемента",
+        json_schema_extra={
+            "format": "uri",
+            "examples": ["/images/voda.png"],
+        },
+    )
+    value: int
+    quantity: int
+    is_bound: bool

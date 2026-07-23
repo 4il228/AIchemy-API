@@ -22,6 +22,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
+from app.services import inventory as inventory_service
 from db import Session, User
 
 # Явные параметры Argon2id: 3 итерации, 64 МиБ памяти, 4 потока (RFC 9106).
@@ -111,6 +112,8 @@ async def register_user(db: AsyncSession, nickname: str, password: str) -> User 
     except IntegrityError:
         await db.rollback()
         return None
+    # Стартовый инвентарь: 4 элемента из глобального пула, все is_bound=True
+    await inventory_service.grant_starter_inventory(db, user.id)
     return user
 
 

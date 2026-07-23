@@ -8,6 +8,7 @@ from sqlalchemy.exc import IntegrityError
 from app.config import settings
 from app.schemas import CraftResponse
 from app.services import images as image_service
+from app.services import inventory as inventory_service
 from app.services import llm as llm_service
 from app.utils import make_image_filename
 from db import Recipe, User, async_session
@@ -53,18 +54,50 @@ async def craft_elements(
 
     # Симметричный ключ: "Огонь + Вода" и "Вода + Огонь" — один рецепт
     element_a, element_b = sorted((e1.lower(), e2.lower()))
+    same_element = e1.lower() == e2.lower()
 
+    # --- Предпроверка инвентаря и кэша (до LLM) ---
     async with async_session() as session:
-        recipe = await session.scalar(
+        stacks1 = await inventory_service.get_stacks_by_name(session, current_user_id, e1)
+        if same_element:
+            # Ингредиенты не списываются: достаточно одной единицы «А» для А+А
+            if inventory_service.total_quantity(stacks1) < 1:
+                raise HTTPException(
+                    status_code=400,
+                    detail="Недостаточно элементов в инвентаре",
+                )
+            values = inventory_service.peek_values(stacks1, 1)
+            values = values + values
+        else:
+            stacks2 = await inventory_service.get_stacks_by_name(
+                session, current_user_id, e2
+            )
+            if (
+                inventory_service.total_quantity(stacks1) < 1
+                or inventory_service.total_quantity(stacks2) < 1
+            ):
+                raise HTTPException(
+                    status_code=400,
+                    detail="Недостаточно элементов в инвентаре",
+                )
+            values = inventory_service.peek_values(
+                stacks1, 1
+            ) + inventory_service.peek_values(stacks2, 1)
+
+        result_value = values[0] + values[1]
+
+        cached = await session.scalar(
             select(Recipe).where(
                 Recipe.element_a == element_a, Recipe.element_b == element_b
             )
         )
+        cached_id = cached.id if cached is not None else None
+        if cached is not None:
+            await _ensure_image(cached)
 
-        if recipe is not None:
-            await _ensure_image(recipe)
-            return _to_response(recipe)
-
+    # --- Cache Miss: LLM + картинка вне транзакции ---
+    new_recipe_data: dict | None = None
+    if cached_id is None:
         try:
             result_json = await llm_service.synthesize_elements(e1, e2)
         except llm_service.JSONDecodeError:
@@ -82,38 +115,87 @@ async def craft_elements(
         except httpx.HTTPError as e:
             raise HTTPException(status_code=502, detail=f"Ошибка загрузки изображения: {e}")
 
-        recipe = Recipe(
-            element_a=element_a,
-            element_b=element_b,
-            result=element_name,
-            description=element_desc,
-            image_path=str(settings.images_dir / filename),
-            image_prompt_en=image_prompt_en,
-            creator_id=current_user_id,
-        )
-        session.add(recipe)
-        try:
-            await session.commit()
-        except IntegrityError:
-            await session.rollback()
-            existing = await session.scalar(
+        new_recipe_data = {
+            "element_a": element_a,
+            "element_b": element_b,
+            "result": element_name,
+            "description": element_desc,
+            "image_path": str(settings.images_dir / filename),
+            "image_prompt_en": image_prompt_en,
+            "creator_id": current_user_id,
+            "value": result_value,
+        }
+
+    # --- Единая транзакция: проверка владения + глобальный пул + выдача результата ---
+    # Ингредиенты НЕ списываются: А и Б остаются, добавляется только С.
+    async with async_session() as session:
+        async with session.begin():
+            stacks1 = await inventory_service.get_stacks_by_name(
+                session, current_user_id, e1
+            )
+            if same_element:
+                if inventory_service.total_quantity(stacks1) < 1:
+                    raise HTTPException(
+                        status_code=400,
+                        detail="Недостаточно элементов в инвентаре",
+                    )
+            else:
+                stacks2 = await inventory_service.get_stacks_by_name(
+                    session, current_user_id, e2
+                )
+                if (
+                    inventory_service.total_quantity(stacks1) < 1
+                    or inventory_service.total_quantity(stacks2) < 1
+                ):
+                    raise HTTPException(
+                        status_code=400,
+                        detail="Недостаточно элементов в инвентаре",
+                    )
+
+            recipe = await session.scalar(
                 select(Recipe).where(
                     Recipe.element_a == element_a, Recipe.element_b == element_b
                 )
             )
-            return _to_response(existing)
+            if recipe is None:
+                if new_recipe_data is None:
+                    raise HTTPException(
+                        status_code=500,
+                        detail="Рецепт не найден после крафта",
+                    )
+                try:
+                    async with session.begin_nested():
+                        recipe = Recipe(**new_recipe_data)
+                        session.add(recipe)
+                        await session.flush()
+                except IntegrityError:
+                    recipe = await session.scalar(
+                        select(Recipe).where(
+                            Recipe.element_a == element_a,
+                            Recipe.element_b == element_b,
+                        )
+                    )
+                    if recipe is None:
+                        raise
 
-        # Создатель — реальный автор реакции: подставляем его никнейм
-        creator = await session.scalar(select(User).where(User.id == current_user_id))
-        return CraftResponse(
-            result=element_name,
-            description=element_desc,
-            image_url=image_service.image_url_for(filename),
-            creator_id=current_user_id,
-            creator_nickname=(
+            # Результат реакции всегда unbound, даже если ингредиенты были bound
+            await inventory_service.add_unbound_result(
+                session, current_user_id, recipe.id
+            )
+
+            creator = await session.scalar(
+                select(User).where(User.id == recipe.creator_id)
+            )
+            nickname = (
                 creator.nickname if creator else settings.default_creator_nickname
-            ),
-        )
+            )
+            return CraftResponse(
+                result=recipe.result,
+                description=recipe.description,
+                image_url=image_service.image_url_for(Path(recipe.image_path).name),
+                creator_id=recipe.creator_id,
+                creator_nickname=nickname,
+            )
 
 
 async def list_recipes() -> list[CraftResponse]:
